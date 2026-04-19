@@ -1,0 +1,106 @@
+Here’s a **First Sprint Plan** tailored for you, with **clear prompts** you can use when working with AI to keep each step focused and productive. Think of this as a 2‑week roadmap to get your Clean Architecture backend off the ground.
+
+---
+
+# 🚀 Sprint 1 Plan (2 Weeks)
+
+## **Step 1: Project Setup & Foundation**
+**Goal:** Create the skeleton project with TypeScript, Express, and Clean Architecture folders.
+
+- Tasks:
+  - Initialize project (`npm init`, `tsconfig.json`, `.env`).
+  - Install dependencies: `express`, `typescript`, `ts-node`, `dotenv`, `jest`.
+  - Create folder structure (`domain`, `application`, `infrastructure`, `interface`).
+
+**Prompt to AI:**  
+*"Generate a TypeScript project setup script with Express and Jest, including a Clean Architecture folder structure."*
+
+---
+
+## **Step 2: Domain Entities**
+**Goal:** Define core business entities (User, Tenant, Case, Note).
+
+- Tasks:
+  - Write TypeScript interfaces/classes for entities.
+  - Add value objects (e.g., `EmailAddress`, `CaseStatus`).
+
+**Prompt to AI:**  
+*"Draft TypeScript interfaces for User, Tenant, and Case entities in a Clean Architecture domain layer."*
+
+---
+
+## **Step 3: Application Layer – First Use Case**
+**Goal:** Implement `CreateCase` use case with repository interface.
+
+- Tasks:
+  - Define `CaseRepository` interface in `application/ports`.
+  - Write `CreateCase` use case in `application/use-cases`.
+
+**Prompt to AI:**  
+*"Write a TypeScript use case class `CreateCase` that uses a `CaseRepository` interface to create a new case."*
+
+---
+
+## **Step 4: Infrastructure – Mock Repository**
+**Goal:** Provide a simple in‑memory repository to test the use case.
+
+- Tasks:
+  - Implement `InMemoryCaseRepository`.
+  - Return created case with generated ID.
+
+**Prompt to AI:**  
+*"Implement an in-memory repository in TypeScript that satisfies the `CaseRepository` interface for testing."*
+
+---
+
+## **Step 5: Interface Layer – Express Controller & Route**
+**Goal:** Expose `CreateCase` via an HTTP endpoint.
+
+- Tasks:
+  - Create `CaseController` with `createCaseHandler`.
+  - Add route `/cases` in `caseRoutes.ts`.
+  - Wire routes into `app.ts`.
+
+**Prompt to AI:**  
+*"Generate an Express controller and route in TypeScript that calls the `CreateCase` use case."*
+
+---
+
+## **Step 6: Middleware & Error Handling**
+**Goal:** Add reusable middleware for auth and error handling.
+
+- Tasks:
+  - Implement `authMiddleware` (JWT).
+  - Implement `errorHandler` middleware.
+  - Apply middleware in routes.
+
+**Prompt to AI:**  
+*"Write Express middleware in TypeScript for JWT authentication and centralized error handling."*
+
+---
+
+## **Step 7: Testing**
+**Goal:** Validate domain and application logic with unit tests.
+
+- Tasks:
+  - Write Jest tests for `CreateCase` use case.
+  - Test `InMemoryCaseRepository`.
+
+**Prompt to AI:**  
+*"Generate Jest unit tests for the `CreateCase` use case using an in-memory repository."*
+
+---
+
+## **Step 8: Sprint Review Deliverable**
+By the end of Sprint 1, you should have:
+- A working Express API with `/cases` endpoint.
+- Clean Architecture layers in place.
+- Unit tests passing for domain and application.
+- Middleware for auth and error handling.
+- Documentation updated with sprint outcomes.
+
+---
+
+✅ This plan ensures you build **incrementally**: starting from domain logic, layering application rules, then infrastructure, and finally exposing endpoints. Each step has a **clear AI prompt** you can reuse to accelerate development.
+
+Would you like me to also draft a **Sprint 2 plan** (focusing on authentication, notes, and email integration) so you can see how the roadmap continues after this foundation?
