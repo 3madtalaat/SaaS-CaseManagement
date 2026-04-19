@@ -1,0 +1,254 @@
+
+Here is a backend design aligned with your `Doc/*.md` specs: multi-tenant isolation, roles (Admin / Agent / Customer), cases, notes, messages, departments, Gmail integration, onboarding, audit, and workers—using **Clean Architecture**, **Node.js**, and **MongoDB**.
+
+---
+
+## 1. Clean Architecture mapping (extends `Doc/structure.md`)
+
+| Layer | Responsibility | Typical contents |
+|--------|----------------|------------------|
+| **domain** | Entities, invariants, enums | `User`, `Tenant`, `Case`, `Note`, `Message`, `Department`, `CaseStatusHistory`, `CallRequest`, `AuditLog`, `TenantMembership`, `AuthToken`; value objects (`Email`, `CaseStatus`); domain errors |
+| **application** | Use cases, ports | `CreateCaseFromEmail`, `AssignAgent`, `AddNote`, `CloseCase`, `SendOutboundReply`, `ConnectGoogleMailbox`; **ports**: `ICaseRepository`, `IUserRepository`, `IEmailGateway`, `IClock`, `ITokenEncrypter` |
+| **infrastructure** | Adapters | Mongoose schemas/repos, Gmail client, JWT/bcrypt, OAuth token storage (encrypted), audit logger, outbox/queue if needed |
+| **interface** (or `presentation`) | HTTP, jobs | Express routers/controllers (thin), DTO validation, auth middleware (`tenantId` + role), optional **worker entry** that calls the same use cases as HTTP |
+| **config** | Wiring | Load env, build DI container, register implementations |
+
+**Dependency rule:** `interface` and `infrastructure` depend on `application` and `domain`; `domain` depends on nothing external. Repositories implement interfaces defined in `application` (or `domain`, depending on your preference—both are valid if you keep interfaces stable).
+
+---
+
+## 2. API surface (REST, kebab-case, plural nouns per `General Naming Conventions.md`)
+
+Base prefix: **`/api/v1`**. Tenant scope is explicit in the path: **`/tenants/:tenantId/...`** so every handler resolves `tenantId` and enforces membership + role.
+
+### 2.1 Auth & session (not tenant-scoped on path; tenant comes from JWT + optional “active tenant”)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/auth/login` | Email + password → JWT (+ refresh if you use it) |
+| POST | `/api/v1/auth/logout` | Invalidate refresh token / session |
+| POST | `/api/v1/auth/refresh` | Optional refresh token rotation |
+| POST | `/api/v1/auth/forgot-password` | Issue reset token, email link |
+| POST | `/api/v1/auth/reset-password` | Complete reset |
+| POST | `/api/v1/auth/onboarding/customer` | Body: onboarding token + password + optional profile (`Features.md`) |
+| POST | `/api/v1/auth/onboarding/staff` | Agent/admin invite completion |
+
+### 2.2 Current user & tenant switching
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/me` | Profile + global role + **tenant memberships** |
+| PATCH | `/api/v1/me` | Profile fields allowed per role |
+| POST | `/api/v1/me/active-tenant` | Body: `{ tenantId }` — sets active tenant for subsequent requests (optional if you always send `X-Tenant-Id`) |
+
+### 2.3 Tenants & Gmail / OAuth (`Features.md`, `Data Model Specifications - User and Tenant.md`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants` | List tenants current user may access (admin/agent) |
+| POST | `/api/v1/tenants` | Create tenant (if your product allows self-serve; else restrict) |
+| GET | `/api/v1/tenants/:tenantId` | Tenant details (admin) |
+| PATCH | `/api/v1/tenants/:tenantId` | `company_name`, `support_email`, etc. |
+| GET | `/api/v1/tenants/:tenantId/integrations/google/start` | OAuth consent URL |
+| GET | `/api/v1/tenants/:tenantId/integrations/google/callback` | Exchange code → store encrypted tokens (`AuthToken`) |
+| DELETE | `/api/v1/tenants/:tenantId/integrations/google` | Revoke / clear stored tokens |
+| GET | `/api/v1/tenants/:tenantId/integrations/google/status` | Connected / expired / error |
+
+### 2.4 Users & memberships (`User`, `TenantMembership`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/users` | Filter, paginate (admin) |
+| POST | `/api/v1/tenants/:tenantId/users` | Invite customer / agent / admin (onboarding email) |
+| GET | `/api/v1/tenants/:tenantId/users/:userId` | Detail |
+| PATCH | `/api/v1/tenants/:tenantId/users/:userId` | Edit profile, role changes per your rules |
+| DELETE | `/api/v1/tenants/:tenantId/users/:userId` | Soft-delete / deactivate |
+| POST | `/api/v1/tenants/:tenantId/users/:userId/reset-password` | Admin-triggered reset |
+
+*Customers are single-tenant; enforce on create.*
+
+### 2.5 Departments
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/departments` | List |
+| POST | `/api/v1/tenants/:tenantId/departments` | Create |
+| GET | `/api/v1/tenants/:tenantId/departments/:departmentId` | Detail |
+| PATCH | `/api/v1/tenants/:tenantId/departments/:departmentId` | Update |
+| DELETE | `/api/v1/tenants/:tenantId/departments/:departmentId` | Delete if allowed |
+
+### 2.6 Cases (lifecycle + filters in `Features.md` / `Layered Architecture Diagram.md`)
+
+Statuses: `OPEN`, `UNDER_INVESTIGATION`, `BEING_RESOLVED`, `RESOLVED`, `CLOSED`.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/cases` | Filter/sort/paginate (customer: own cases; agent: assigned + unassigned policy; admin: all) |
+| POST | `/api/v1/tenants/:tenantId/cases` | Manual case creation (portal); email-created cases come from worker |
+| GET | `/api/v1/tenants/:tenantId/cases/:caseId` | Detail + customer snippet per role |
+| PATCH | `/api/v1/tenants/:tenantId/cases/:caseId` | Update title/metadata if modeled |
+| PATCH | `/api/v1/tenants/:tenantId/cases/:caseId/status` | Status transition + validation |
+| POST | `/api/v1/tenants/:tenantId/cases/:caseId/close` | Customer or privileged close |
+| POST | `/api/v1/tenants/:tenantId/cases/:caseId/reopen` | |
+| POST | `/api/v1/tenants/:tenantId/cases/:caseId/assign` | `{ assignedAgentId \| null }` |
+| PATCH | `/api/v1/tenants/:tenantId/cases/:caseId/departments` | Replace `assignedDepartments[]` |
+| GET | `/api/v1/tenants/:tenantId/cases/:caseId/status-history` | Audit trail of status changes |
+| GET | `/api/v1/tenants/:tenantId/cases/unassigned` | Agent/admin: claim flow |
+| POST | `/api/v1/tenants/:tenantId/cases/:caseId/claim` | Agent claims unassigned |
+| GET | `/api/v1/tenants/:tenantId/cases/inactive` | Admin “no reply / stale” monitoring (`Sequence Diagram - Admin Monitoring Inactive Cases.md`) |
+
+Query examples for admin list: `customerId`, `dateOpenedFrom/To`, `dateUpdatedFrom/To`, `inactiveSince`, `sort`, `page`, `pageSize`.
+
+### 2.7 Customer context (agent)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/customers/:customerId/cases` | Past cases for history (`Features.md`) |
+
+### 2.8 Notes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/cases/:caseId/notes` | Customer: public only; staff: both |
+| POST | `/api/v1/tenants/:tenantId/cases/:caseId/notes` | Body: `visibility: PUBLIC \| INTERNAL`, content |
+
+### 2.9 Messages (email thread)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/cases/:caseId/messages` | List messages |
+| POST | `/api/v1/tenants/:tenantId/cases/:caseId/messages/reply` | Outbound reply via Gmail (`Outbound Email Service`) |
+
+### 2.10 Call requests
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/call-requests` | Agent/admin dashboard pending |
+| POST | `/api/v1/tenants/:tenantId/cases/:caseId/call-requests` | Customer submits form |
+| PATCH | `/api/v1/tenants/:tenantId/call-requests/:callRequestId` | Mark handled / assign |
+
+### 2.11 Dashboards (aggregate read models)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/dashboard/agent` | Open cases count, pending call requests |
+| GET | `/api/v1/tenants/:tenantId/dashboard/admin` | Overview metrics |
+| GET | `/api/v1/tenants/:tenantId/dashboard/customer` | Own open cases summary |
+
+*Implementation:* thin handlers calling dedicated use cases or read-optimized queries (still behind repository ports).
+
+### 2.12 Audit & compliance (`Base Implementation Document.md`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/tenants/:tenantId/audit-logs` | Filter by actor, entity type, date (admin) |
+
+### 2.13 System / worker hooks (optional HTTP)
+
+Workers usually invoke use cases directly in-process; if you need HTTP:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/internal/email-scan/run` | API-key or mTLS; triggers scan for all tenants or one |
+| GET | `/api/v1/health` | Liveness |
+| GET | `/api/v1/health/ready` | DB + critical deps |
+
+---
+
+## 3. Cross-cutting middleware (from docs)
+
+1. **Auth** — JWT validation; attach `userId`, global `role`, `tenantIds` or active `tenantId`.  
+2. **Tenant** — Path `tenantId` must match membership; customers restricted to their tenant.  
+3. **Authorization** — Policy per route (e.g. internal notes: admin/agent only).  
+4. **Tenant isolation** — Every repository query includes `tenant_id` (snake_case in DB per your conventions).  
+5. **Audit** — On mutating commands, append `AuditLog` in application layer or via decorator.
+
+---
+
+## 4. MongoDB alignment (`General Naming Conventions.md`)
+
+- Collections: plural, e.g. `users`, `tenants`, `tenant_memberships`, `cases`, `notes`, `messages`, `departments`, `case_status_histories`, `call_requests`, `audit_logs`, `auth_tokens`, `system_configs`.  
+- Document fields: **snake_case** (`tenant_id`, `user_id`, `assigned_agent_id`, …).  
+- Indexes: `idx_cases_tenant_id_updated_at`, `idx_cases_tenant_id_assigned_agent_id`, `idx_tenant_memberships_user_id`, etc.
+
+---
+
+## 5. Environment configuration (`.env` design)
+
+Use **one** `.env` locally and **`.env.example`** in repo (no secrets). Optional: `.env.development` / `.env.production` with `dotenv-flow` if you want profiles.
+
+### 5.1 `.env.example` (committed)
+
+```bash
+# App
+node_env=development
+port=3000
+api_prefix=/api/v1
+cors_origin=http://localhost:5173
+
+# MongoDB
+mongodb_uri=mongodb://localhost:27017/case_management
+mongodb_db_name=case_management
+
+# Auth / passwords
+jwt_secret=change-me
+jwt_expires_in=15m
+jwt_refresh_secret=change-me-too
+jwt_refresh_expires_in=7d
+bcrypt_rounds=12
+
+# Encryption at rest (AuthToken fields — 32-byte key for AES-256-GCM, base64-encoded)
+token_encryption_key=
+
+# Google OAuth (tenant mailbox)
+google_client_id=
+google_client_secret=
+google_oauth_redirect_base=http://localhost:3000/api/v1/tenants
+
+# Gmail API usage (worker + outbound)
+gmail_pubsub_topic=
+email_poll_interval_ms=60000
+
+# URLs for emails (onboarding, password reset)
+public_app_url=http://localhost:5173
+email_from_name=Case Management
+
+# Workers / internal
+internal_api_key=
+email_worker_enabled=true
+
+# Logging / observability
+log_level=info
+```
+
+### 5.2 Naming
+
+Configuration keys use **snake_case** as in your doc (`email_poll_interval_ms`, etc.). In Node, map them once in `config/env.ts` (or similar) to a typed `AppConfig` with camelCase for application code if you prefer.
+
+### 5.3 Secrets split (optional)
+
+For production you might keep:
+
+- **`.env`** — non-secret defaults  
+- **Secrets manager / vault** — `jwt_secret`, `token_encryption_key`, `google_client_secret`, `mongodb_uri` with credentials  
+
+The *structure* stays the same; only the loader changes.
+
+---
+
+## 6. How features map to use cases (application layer)
+
+| Feature area | Example use cases |
+|--------------|-------------------|
+| Multi-tenant | `AssertTenantMembership`, `ResolveActiveTenant` |
+| Customer onboarding | `CompleteCustomerOnboarding`, `RegisterCustomerFromEmail` (worker) |
+| Cases | `CreateCase`, `TransitionCaseStatus`, `CloseCase`, `ReopenCase`, `AssignAgent`, `SetCaseDepartments`, `ListInactiveCases` |
+| Notes/messages | `AddPublicNote`, `AddInternalNote`, `RecordInboundEmail`, `SendCaseReply` |
+| Gmail | `ExchangeGoogleOAuthCode`, `RefreshGoogleAccessToken`, `FetchNewMessages` (worker) |
+| Admin | `InviteUser`, `ResetUserPassword`, `ListAuditLogs` |
+
+HTTP controllers call one use case per request; workers call the same use cases with system identity and stricter internal checks.
+
+---
+
+This gives you a single coherent **REST map**, **Clean Architecture** layering consistent with `Doc/structure.md`, **MongoDB naming**, and **env** layout for Node. If you want this materialized as files in the repo (e.g. `src/` skeleton + `.env.example`), say so and we can add only those artifacts.
